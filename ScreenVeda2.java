@@ -16,6 +16,7 @@ import org.json.JSONArray;
 import java.net.URL;
 import java.net.HttpURLConnection;
 /**
+ * node server.js
  * ScreenVeda — Windows Screen Time Tracker
  * Java 8 compatible.
  *
@@ -99,7 +100,7 @@ public class ScreenVeda2 {
         public void onLoginSuccess(String username) {
             CURRENT_USER = username;
 
-            USER_ID = ApiService.login(username);
+            
 
             System.out.println("Logged in User ID: " + USER_ID);
 
@@ -470,31 +471,89 @@ public class ScreenVeda2 {
         }
 
         void doLogin() {
-            String user = loginUser.getText().trim();
-            String pass = new String(loginPass.getPassword());
-            if (user.isEmpty() || pass.isEmpty()) {
-                loginError.setText("Please enter username and password.");
-                return;
-            }
+    String user = loginUser.getText().trim();
+    String pass = new String(loginPass.getPassword());
+    if (user.isEmpty() || pass.isEmpty()) {
+        loginError.setText("Please enter username and password.");
+        return;
+    }
+
+    loginError.setText("Signing in...");
+
+    new Thread(new Runnable() {
+        public void run() {
             try {
-                String[] row = db.getUser(user);
-                if (row == null) {
-                    loginError.setText("No account found for \"" + user + "\".");
-                    return;
-                }
-                String storedHash = row[0];
-                String salt       = row[1];
-                if (!hashPassword(pass, salt).equals(storedHash)) {
-                    loginError.setText("Incorrect password. Please try again.");
-                    return;
-                }
-                loginError.setText(" ");
-                dispose();
-                callback.onLoginSuccess(user);
+                // Step 1: Try server login first
+                String serverUserId = ApiService.login(user, pass);
+
+                SwingUtilities.invokeLater(new Runnable() {
+                    public void run() {
+                        if (serverUserId != null && !serverUserId.equals("null")) {
+                            // Server login success — save locally for offline use
+                            try {
+                                if (db.getUser(user) == null) {
+                                    String salt = user + "_salt";
+                                    String hash = hashPassword(pass, salt);
+                                    db.createUser(user, hash, salt, "");
+                                }
+                            } catch (Exception ignored) {}
+
+                            USER_ID = serverUserId;
+                            loginError.setText(" ");
+                            dispose();
+                            callback.onLoginSuccess(user);
+
+                        } else {
+                            // Step 2: Fall back to local DB
+                            try {
+                                String[] row = db.getUser(user);
+                                if (row == null) {
+                                    loginError.setText("No account found for \"" + user + "\".");
+                                    return;
+                                }
+                                String storedHash = row[0];
+                                String salt       = row[1];
+                                if (!hashPassword(pass, salt).equals(storedHash)) {
+                                    loginError.setText("Incorrect password. Please try again.");
+                                    return;
+                                }
+                                loginError.setText(" ");
+                                dispose();
+                                callback.onLoginSuccess(user);
+                            } catch (Exception ex) {
+                                loginError.setText("Error: " + ex.getMessage());
+                            }
+                        }
+                    }
+                });
+
             } catch (Exception ex) {
-                loginError.setText("Error: " + ex.getMessage());
+                SwingUtilities.invokeLater(new Runnable() {
+                    public void run() {
+                        loginError.setText("Server unreachable. Trying local...");
+                        // Fall back to local only
+                        try {
+                            String[] row = db.getUser(user);
+                            if (row == null) {
+                                loginError.setText("No account found for \"" + user + "\".");
+                                return;
+                            }
+                            if (!hashPassword(pass, row[1]).equals(row[0])) {
+                                loginError.setText("Incorrect password. Please try again.");
+                                return;
+                            }
+                            loginError.setText(" ");
+                            dispose();
+                            callback.onLoginSuccess(user);
+                        } catch (Exception e2) {
+                            loginError.setText("Error: " + e2.getMessage());
+                        }
+                    }
+                });
             }
         }
+    }).start();
+}
 
         void doRegister() {
             String user  = regUser.getText().trim();
@@ -2073,9 +2132,9 @@ for (StatCard c : statCards) cardsRow.add(c);
     // =========================================================================
     static class ApiService {
 
-    static String SERVER_URL = "http://10.76.32.54:3000";
+    static String SERVER_URL = "http://10.76.32.18:3000";
 
-    static String login(String username) {
+    static String login(String username,String password) {
     try {
         String fullUrl = SERVER_URL + "/api/auth/login";
         System.out.println("Calling URL: " + fullUrl);
@@ -2087,7 +2146,7 @@ for (StatCard c : statCards) cardsRow.add(c);
         con.setRequestProperty("Content-Type", "application/json");
         con.setDoOutput(true);
 
-        String json = "{ \"username\": \"" + username + "\" }";
+       String json = "{ \"username\": \"" + username + "\", \"password\": \"" + password + "\" }";
         System.out.println("Request Body: " + json);
 
         OutputStream os = con.getOutputStream();
