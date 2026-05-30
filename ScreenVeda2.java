@@ -969,24 +969,32 @@ public class ScreenVeda2 {
                             JSONObject json = new JSONObject(result);
                             JSONArray sessions = json.getJSONArray("sessions");
 
-                            long thisDeviceSecs  = 0;
-                            long otherDeviceSecs = 0;
+                            long thisDeviceSecs = 0;
+
+                            // Collect ALL intervals across all devices for union calculation
+                            List<long[]> allIntervals = new ArrayList<long[]>();
+                            List<long[]> otherIntervals = new ArrayList<long[]>();
 
                             for (int i = 0; i < sessions.length(); i++) {
                                 JSONObject s = sessions.getJSONObject(i);
-                                long start    = s.getLong("start_time");
-                                long end      = s.getLong("end_time");
-                                long duration = (end - start) / 1000;
+                                long start  = s.getLong("start_time");
+                                long end    = s.getLong("end_time");
                                 String device = s.optString("device_id", "");
 
-                                if (device.equals("windows-device")) {
-                                    thisDeviceSecs += duration;
+                                allIntervals.add(new long[]{start, end});
+
+                                if (device.equals(BackgroundService.getDeviceId())) {
+                                    thisDeviceSecs += (end - start) / 1000;
                                 } else {
-                                    otherDeviceSecs += duration;
+                                    otherIntervals.add(new long[]{start, end});
                                 }
                             }
 
-                            long allDevicesTotal = thisDeviceSecs + otherDeviceSecs;
+                            // ── Union of all device intervals ──────────────────
+                            long allDevicesTotal = ApiService.calcUnionSeconds(allIntervals);
+
+                            // ── Other devices union ────────────────────────────
+                           long otherDeviceSecs = ApiService.calcUnionSeconds(otherIntervals);
 
                             // Update the 3 sync cards
                             statCards[0].setValue(NotificationService.fmt(thisDeviceSecs));
@@ -1008,6 +1016,61 @@ public class ScreenVeda2 {
         }).start();
     }
 });
+//     refreshBtn.addActionListener(new ActionListener() {
+//     public void actionPerformed(ActionEvent e) {
+//         refreshBtn.setText("Syncing...");
+//         refreshBtn.setEnabled(false);
+
+//         new Thread(new Runnable() {
+//             public void run() {
+//                 String today = new SimpleDateFormat("yyyy-MM-dd").format(new Date());
+//                 String result = ApiService.getMergedUsage(USER_ID, today);
+
+//                 SwingUtilities.invokeLater(new Runnable() {
+//                     public void run() {
+//                         try {
+//                             JSONObject json = new JSONObject(result);
+//                             JSONArray sessions = json.getJSONArray("sessions");
+
+//                             long thisDeviceSecs  = 0;
+//                             long otherDeviceSecs = 0;
+
+//                             for (int i = 0; i < sessions.length(); i++) {
+//                                 JSONObject s = sessions.getJSONObject(i);
+//                                 long start    = s.getLong("start_time");
+//                                 long end      = s.getLong("end_time");
+//                                 long duration = (end - start) / 1000;
+//                                 String device = s.optString("device_id", "");
+
+//                                 if (device.equals(BackgroundService.getDeviceId())) {
+//                                     thisDeviceSecs += duration;
+//                                 } else {
+//                                     otherDeviceSecs += duration;
+//                                 }
+//                             }
+
+//                             long allDevicesTotal = thisDeviceSecs + otherDeviceSecs;
+
+//                             // Update the 3 sync cards
+//                             statCards[0].setValue(NotificationService.fmt(thisDeviceSecs));
+//                             statCards[1].setValue(NotificationService.fmt(allDevicesTotal));
+//                             statCards[2].setValue(otherDeviceSecs > 0
+//                                 ? NotificationService.fmt(otherDeviceSecs)
+//                                 : "No other devices");
+
+//                         } catch (Exception ex) {
+//                             statCards[1].setValue("Sync failed");
+//                             System.err.println("[Sync] " + ex.getMessage());
+//                         }
+
+//                         refreshBtn.setText("⟳ Get Merged Usage");
+//                         refreshBtn.setEnabled(true);
+//                     }
+//                 });
+//             }
+//         }).start();
+//     }
+// });
 //     refreshBtn.addActionListener(new ActionListener() {
 //     public void actionPerformed(ActionEvent e) {
 //         refreshBtn.setText("Syncing...");
@@ -1932,7 +1995,7 @@ for (StatCard c : statCards) cardsRow.add(c);
             if (USER_ID != null) {
                 ApiService.uploadSession(
                         USER_ID,
-                        "windows-device",
+                        getDeviceId(),
                         curStart,
                         endTime
                 );
@@ -1949,6 +2012,13 @@ for (StatCard c : statCards) cardsRow.add(c);
         static String clean(String s) {
             return (s == null || s.trim().isEmpty()) ? "unknown" : s.trim();
         }
+        static String getDeviceId() {
+    try {
+        return java.net.InetAddress.getLocalHost().getHostName();
+    } catch (Exception e) {
+        return "device-" + System.getProperty("user.name");
+    }
+}
     }
 
     // =========================================================================
@@ -2181,11 +2251,27 @@ for (StatCard c : statCards) cardsRow.add(c);
         System.out.println("Login Response: " + response.toString());
 
         // Extract user_id safely
-        String userId = response.toString()
-                .split(":")[1]
-                .replace("\"", "")
-                .replace("}", "")
-                .trim();
+        // String userId = response.toString()
+        //         .split(":")[1]
+        //         .replace("\"", "")
+        //         .replace("}", "")
+        //         .trim();
+        // ✅ REPLACE WITH THIS (proper JSON parsing)
+String resp = response.toString();
+String userId = null;
+
+// Extract user_id field properly
+int idx = resp.indexOf("\"user_id\":");
+if (idx != -1) {
+    String after = resp.substring(idx + 10).trim();
+    // remove leading quote
+    if (after.startsWith("\"")) after = after.substring(1);
+    // take until next quote
+    int end = after.indexOf("\"");
+    if (end != -1) userId = after.substring(0, end);
+}
+
+System.out.println("Parsed User ID: " + userId);
 
         System.out.println("Parsed User ID: " + userId);
 
@@ -2320,6 +2406,41 @@ static String getMergedUsage(String userId, String date) {
         System.out.println("GET API Error: " + e.getMessage());
         return null;
     }
+}
+// Merges overlapping time intervals and returns total unique seconds
+static long calcUnionSeconds(List<long[]> intervals) {
+    if (intervals.isEmpty()) return 0;
+
+    // Sort by start time
+    Collections.sort(intervals, new Comparator<long[]>() {
+        public int compare(long[] a, long[] b) {
+            return Long.compare(a[0], b[0]);
+        }
+    });
+
+    long totalMs = 0;
+    long unionStart = intervals.get(0)[0];
+    long unionEnd   = intervals.get(0)[1];
+
+    for (int i = 1; i < intervals.size(); i++) {
+        long start = intervals.get(i)[0];
+        long end   = intervals.get(i)[1];
+
+        if (start <= unionEnd) {
+            // Overlapping — extend the current union window
+            unionEnd = Math.max(unionEnd, end);
+        } else {
+            // Gap found — finalize previous window, start new one
+            totalMs += (unionEnd - unionStart);
+            unionStart = start;
+            unionEnd   = end;
+        }
+    }
+
+    // Add the last window
+    totalMs += (unionEnd - unionStart);
+
+    return totalMs / 1000; // convert ms to seconds
 }
 
 }
